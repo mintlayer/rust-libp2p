@@ -1,5 +1,6 @@
 // Copyright 2021 Parity Technologies Ltd.
 // Copyright 2021 Oliver Wangler
+// Copyright 2022 RBB S.r.l
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
 // copy of this software and associated documentation files (the "Software"),
@@ -83,7 +84,6 @@ impl<T: StreamingCodec> StreamingProtocolsHandler<T> {
     }
 }
 
-#[derive(Debug)]
 pub enum StreamingProtocolsHandlerEvent<T: StreamingCodec> {
     NewIncoming {
         id: InboundStreamId,
@@ -113,6 +113,45 @@ impl<T: StreamingCodec> StreamingProtocol<T> {
     fn new() -> Self {
         Self {
             _codec: Default::default(),
+        }
+    }
+}
+
+impl<T: StreamingCodec> std::fmt::Debug for StreamingProtocolsHandlerEvent<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StreamingProtocolsHandlerEvent::NewIncoming { id, stream: _ } => f
+                .debug_struct("StreamingProtocolsHandlerEvent::NewIncoming")
+                .field("stream id", id)
+                .finish(),
+            StreamingProtocolsHandlerEvent::StreamOpened { id, stream: _ } => f
+                .debug_struct("StreamingProtocolsHandlerEvent::StreamOpened")
+                .field("stream id", id)
+                .finish(),
+            StreamingProtocolsHandlerEvent::InboundStreamClosed { id } => f
+                .debug_struct("StreamingProtocolsHandlerEvent::InboundStreamClosed")
+                .field("stream id", id)
+                .finish(),
+            StreamingProtocolsHandlerEvent::OutboundStreamClosed { id } => f
+                .debug_struct("StreamingProtocolsHandlerEvent::OutboundStreamClosed")
+                .field("stream id", id)
+                .finish(),
+            StreamingProtocolsHandlerEvent::OutboundTimeout(id) => f
+                .debug_struct("StreamingProtocolsHandlerEvent::OutboundTimeout")
+                .field("stream id", id)
+                .finish(),
+            StreamingProtocolsHandlerEvent::OutboundUnsupportedProtocols(id) => f
+                .debug_struct("StreamingProtocolsHandlerEvent::OutboundUnsupportedProtocols")
+                .field("stream id", id)
+                .finish(),
+            StreamingProtocolsHandlerEvent::InboundTimeout(id) => f
+                .debug_struct("StreamingProtocolsHandlerEvent::InboundTimeout")
+                .field("stream id", id)
+                .finish(),
+            StreamingProtocolsHandlerEvent::InboundUnsupportedProtocols(id) => f
+                .debug_struct("StreamingProtocolsHandlerEvent::InboundUnsupportedProtocols")
+                .field("stream id", id)
+                .finish(),
         }
     }
 }
