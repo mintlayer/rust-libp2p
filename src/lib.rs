@@ -116,6 +116,10 @@ pub use libp2p_rendezvous as rendezvous;
 #[cfg_attr(docsrs, doc(cfg(feature = "request-response")))]
 #[doc(inline)]
 pub use libp2p_request_response as request_response;
+#[cfg(feature = "streaming")]
+#[cfg_attr(docsrs, doc(cfg(feature = "streaming")))]
+#[doc(inline)]
+pub use libp2p_streaming as streaming;
 #[doc(inline)]
 pub use libp2p_swarm as swarm;
 #[cfg(any(feature = "tcp-async-io", feature = "tcp-tokio"))]
