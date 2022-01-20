@@ -1,5 +1,6 @@
 // Copyright 2021 Parity Technologies Ltd.
 // Copyright 2021 Oliver Wangler
+// Copyright 2022 RBB S.r.l
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
 // copy of this software and associated documentation files (the "Software"),
@@ -34,7 +35,9 @@ pub use handler::StreamId;
 use handler::{RefCount, StreamingProtocolsHandler, StreamingProtocolsHandlerEvent};
 use libp2p_core::{connection::ConnectionId, ConnectedPoint, Multiaddr, PeerId, ProtocolName};
 use libp2p_swarm::{
-    DialPeerCondition, NegotiatedSubstream, NetworkBehaviour, NetworkBehaviourAction, NotifyHandler,
+    dial_opts::{DialOpts, PeerCondition},
+    DialError, IntoProtocolsHandler, NegotiatedSubstream, NetworkBehaviour, NetworkBehaviourAction,
+    NotifyHandler,
 };
 use smallvec::SmallVec;
 use std::{
@@ -48,9 +51,10 @@ use std::{
 
 mod handler;
 
-pub struct Streaming<T: StreamingCodec> {
+pub struct Streaming<T: StreamingCodec + Send + 'static> {
     /// Pending events to return from `poll`
-    pending_events: VecDeque<NetworkBehaviourAction<OutboundStreamId, StreamingEvent<T>>>,
+    pending_events:
+        VecDeque<NetworkBehaviourAction<StreamingEvent<T>, StreamingProtocolsHandler<T>>>,
     /// The next (inbound) stream ID
     next_inbound_id: Arc<AtomicU64>,
     /// The next outbound stream ID
@@ -67,7 +71,7 @@ pub struct Streaming<T: StreamingCodec> {
     config: StreamingConfig,
     _codec: PhantomData<T>,
 }
-impl<T: StreamingCodec> Streaming<T> {
+impl<T: StreamingCodec + Send + 'static> Streaming<T> {
     pub fn new(config: StreamingConfig) -> Self {
         Self {
             config,
@@ -99,7 +103,7 @@ impl Default for StreamingConfig {
         }
     }
 }
-impl<T: StreamingCodec> Default for Streaming<T> {
+impl<T: StreamingCodec + Send + 'static> Default for Streaming<T> {
     fn default() -> Self {
         Self {
             pending_events: Default::default(),
@@ -245,7 +249,7 @@ pub enum InboundFailure {
     UnsupportedProtocols,
 }
 
-impl<T: StreamingCodec> Streaming<T> {
+impl<T: StreamingCodec + Send + 'static> Streaming<T> {
     /// Establish an outbound stream. If the given [`PeerId`] is not yet connected, a dialing
     /// attempt will be initiated. The remote's address needs to be added first through
     /// [`add_address`].
@@ -253,11 +257,13 @@ impl<T: StreamingCodec> Streaming<T> {
         let stream_id = self.next_stream_id();
         tracing::trace!(%peer_id, ?stream_id, "Opening stream");
         if !self.try_open(peer_id, stream_id) {
-            self.pending_events
-                .push_back(NetworkBehaviourAction::DialPeer {
-                    peer_id,
-                    condition: DialPeerCondition::Disconnected,
-                });
+            let handler = self.new_handler();
+            self.pending_events.push_back(NetworkBehaviourAction::Dial {
+                opts: DialOpts::peer_id(peer_id)
+                    .condition(PeerCondition::Disconnected)
+                    .build(),
+                handler,
+            });
             self.pending_outbound_requests
                 .entry(peer_id)
                 .or_default()
@@ -383,9 +389,10 @@ impl<T: StreamingCodec + Send + 'static> NetworkBehaviour for Streaming<T> {
         peer: &PeerId,
         conn: &ConnectionId,
         endpoint: &ConnectedPoint,
+        _errors: Option<&Vec<Multiaddr>>,
     ) {
         let address = match endpoint {
-            ConnectedPoint::Dialer { address } => Some(address.clone()),
+            ConnectedPoint::Dialer { address, .. } => Some(address.clone()),
             ConnectedPoint::Listener { .. } => None,
         };
         self.connected
@@ -399,6 +406,7 @@ impl<T: StreamingCodec + Send + 'static> NetworkBehaviour for Streaming<T> {
         peer_id: &PeerId,
         conn: &ConnectionId,
         _: &ConnectedPoint,
+        _: <Self::ProtocolsHandler as IntoProtocolsHandler>::Handler,
     ) {
         let connections = self
             .connected
@@ -442,18 +450,25 @@ impl<T: StreamingCodec + Send + 'static> NetworkBehaviour for Streaming<T> {
         self.connected.remove(peer);
     }
 
-    fn inject_dial_failure(&mut self, peer: &PeerId) {
-        // Consider any pending outgoing requests to that peer failed.
-        if let Some(pending) = self.pending_outbound_requests.remove(peer) {
-            for id in pending {
-                self.pending_events
-                    .push_back(NetworkBehaviourAction::GenerateEvent(
-                        StreamingEvent::OutboundFailure {
-                            peer_id: *peer,
-                            id,
-                            error: OutboundFailure::DialFailure,
-                        },
-                    ));
+    fn inject_dial_failure(
+        &mut self,
+        peer: Option<PeerId>,
+        _: Self::ProtocolsHandler,
+        _: &DialError,
+    ) {
+        if let Some(peer) = peer {
+            // Consider any pending outgoing requests to that peer failed.
+            if let Some(pending) = self.pending_outbound_requests.remove(&peer) {
+                for id in pending {
+                    self.pending_events
+                        .push_back(NetworkBehaviourAction::GenerateEvent(
+                            StreamingEvent::OutboundFailure {
+                                peer_id: peer,
+                                id,
+                                error: OutboundFailure::DialFailure,
+                            },
+                        ));
+                }
             }
         }
     }
@@ -550,8 +565,7 @@ impl<T: StreamingCodec + Send + 'static> NetworkBehaviour for Streaming<T> {
         &mut self,
         _: &mut std::task::Context<'_>,
         _: &mut impl libp2p_swarm::PollParameters,
-    ) -> std::task::Poll<libp2p_swarm::NetworkBehaviourAction<OutboundStreamId, Self::OutEvent>>
-    {
+    ) -> std::task::Poll<NetworkBehaviourAction<Self::OutEvent, Self::ProtocolsHandler>> {
         if let Some(ev) = self.pending_events.pop_front() {
             return Poll::Ready(ev);
         } else if self.pending_events.capacity() > EMPTY_QUEUE_SHRINK_THRESHOLD {
